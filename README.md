@@ -73,6 +73,3 @@ This project demonstrates how AI and workflow automation can simplify competitor
 - Improve scoring with additional performance indicators.
 
 
----
-
-*Built to explore the intersection of Artificial Intelligence, Marketing Intelligence, and Workflow Automation.*
