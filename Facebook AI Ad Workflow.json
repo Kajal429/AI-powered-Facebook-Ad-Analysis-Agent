@@ -1,0 +1,1197 @@
+{
+  "name": "Facebook AI Ad Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Meta Ad Library Creative Intelligence",
+        "formDescription": "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=IN&is_targeted_country=false&media_type=all&q=%22MySivi%22&search_type=keyword_exact_phrase&sort_data[direction]=desc&sort_data[mode]=total_impressions",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "ad_library_url",
+              "placeholder": "https://facebook.com...",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "max_ads",
+              "fieldType": "number",
+              "placeholder": "10"
+            },
+            {
+              "fieldLabel": "min_days_running",
+              "fieldType": "number",
+              "placeholder": "7"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "15561948-7cfd-4248-b665-3c6b9c56b977",
+      "name": "Run Daily",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -544,
+        -144
+      ],
+      "webhookId": "80825168-3d31-4293-8e7b-fb9ca91f1936"
+    },
+    {
+      "parameters": {
+        "operation": "Run actor and get dataset",
+        "actorId": {
+          "__rl": true,
+          "value": "JJghSZmShuco4j9gJ",
+          "mode": "list",
+          "cachedResultName": "Facebook Ads Library Scraper (apify/facebook-ads-scraper)",
+          "cachedResultUrl": "https://console.apify.com/actors/JJghSZmShuco4j9gJ/input"
+        },
+        "customBody": "={\n    \"enrichWithEcommerceData\": false,\n    \"includeAboutPage\": false,\n    \"isDetailsPerAd\": false,\n    \"onlyTotal\": false,\n    \"resultsLimit\": {{ $json.max_ads || 10 }},\n    \"startUrls\": [\n        {\n            \"url\": \"{{ $json.ad_library_url }}\"\n        }\n    ]\n}\n",
+        "timeout": {},
+        "maxTotalChargeUsd": {},
+        "authentication": "apifyOAuth2Api"
+      },
+      "id": "ac678a1e-ae29-47fa-b5cf-4f58d006ddff",
+      "name": "Scrape ADs",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 2,
+      "position": [
+        -320,
+        -144
+      ],
+      "credentials": {
+        "apifyOAuth2Api": {
+          "id": "c6SA1UpCN0PgqOw1",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// NormalizeAds: Code node, \"Run Once for All Items\"\nconst out = [];\n\nfor (const item of $input.all()) {\n  const a = item.json;\n  const snap = a.snapshot || {};\n  const cards = (snap.cards && snap.cards.length) ? snap.cards : (snap.videos || []);\n\n  // har ad ka pehla video card\n  const c = cards.find(x => x.videoHdUrl || x.videoSdUrl);\n  if (!c) continue;\n\n  const startMs = a.startDate ? a.startDate * 1000 : null;\n  const endMs = a.endDate ? a.endDate * 1000 : Date.now();\n  const daysRunning = startMs ? Math.max(1, Math.round((endMs - startMs) / 86400000)) : 0;\n  const collationCount = Number(a.collationCount) || 1;\n\n  out.push({ json: {\n    adId: a.adArchiveId,\n    pageName: snap.pageName || a.pageName || null,\n    videoUrl: c.videoHdUrl || c.videoSdUrl,\n    thumbnail: c.videoPreviewImageUrl || null,\n    body: c.body || snap.body?.text || '',\n    headline: c.title || snap.title || '',\n    ctaText: c.ctaText || snap.ctaText || null,\n    landingUrl: c.linkUrl || snap.linkUrl || null,\n    cardCount: cards.length,\n    isActive: a.isActive ?? null,\n    daysRunning,\n    collationCount,\n    winScore: daysRunning + collationCount * 5,\n  }});\n}\n\nreturn out;"
+      },
+      "id": "353ea02a-2126-4afe-b28b-4c1cd5d02c61",
+      "name": "NormalizeAds",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const collect = (o, acc = []) => {\n  if (typeof o === 'string') acc.push(o);\n  else if (Array.isArray(o)) o.forEach(x => collect(x, acc));\n  else if (o && typeof o === 'object') Object.values(o).forEach(x => collect(x, acc));\n  return acc;\n};\n\nconst out = [];\n\nfor (const [i, item] of $input.all().entries()) {\n  const raw = collect(item.json)\n    .filter(s => s.includes('\"hook\"'))\n    .sort((a, b) => b.length - a.length)[0] || '';\n\n  let ai;\n  try {\n    ai = JSON.parse(raw.replace(/```json|```/g, '').trim());\n  } catch (e) {\n    ai = {\n      error: raw ? 'JSON parse failed' : (item.json.error || 'Gemini text not found'),\n      rawSnippet: (raw || JSON.stringify(item.json)).slice(0, 300),\n    };\n  }\n\n  // NormalizeAds se original data wapas jodo\n  let src = {};\n  try { src = $('NormalizeAds').itemMatching(i).json; }\n  catch (e) { src = $('NormalizeAds').all()[i]?.json || {}; }\n\n  const scores = [ai.hook_strength, ai.audience_relevance, ai.benefit_clarity, ai.cta_quality]\n    .map(Number).filter(n => !isNaN(n));\n  const creativeScore = scores.length\n    ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10\n    : null;\n\n  out.push({ json: {\n    adId: src.adId,\n    pageName: src.pageName,\n    videoUrl: src.videoUrl,\n    ctaText: src.ctaText,\n    daysRunning: src.daysRunning,\n    winScore: src.winScore,\n    creativeScore,\n    ...ai,\n  }});\n}\n\nreturn out;"
+      },
+      "id": "56018890-2185-43f4-9990-828f58a6e088",
+      "name": "Data Formater1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "ads",
+        "options": {}
+      },
+      "id": "67b6c3ae-d957-48b2-a980-55765a0d0414",
+      "name": "Aggregate",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1280,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ JSON.stringify($json.ads.map(a => ({adId:a.adId,pageName:a.pageName,language:a.language,daysRunning:a.daysRunning,hook:a.hook,hook_type:a.hook_type,emotion:a.emotion,creative_approach:a.creative_approach,cta:a.cta,hook_strength:a.hook_strength,audience_relevance:a.audience_relevance,benefit_clarity:a.benefit_clarity,cta_quality:a.cta_quality}))) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=You are a Facebook ad strategist ranking competitor video ads.\nThere is no CTR or ROAS data. daysRunning is the main success proxy.\nSteps:\n1. Call score_calculator ONCE with the full JSON array of ads. Never calculate scores yourself.\n2. Optionally call benchmarks to compare daysRunning against typical values.\n3. Rank ads by finalScore. Ignore ads where daysRunning < 14 when naming the winner.\n4. Give a short reason per ad, citing fields (hook_type, emotion, creative_approach, cta).\n5. List patterns shared by the top ads and caveats (small sample, language/format confounds).\nTreat Hindi and Hinglish as the same language. Return only the required JSON."
+        }
+      },
+      "id": "c0772807-ad14-4a4c-9d65-6493f19c3257",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1936,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {}
+      },
+      "id": "f4af9977-7155-4ea8-aaf3-7d3aea59760a",
+      "name": "Google Gemini Chat Model1",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1744,
+        96
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": "=Input: JSON array string of ads with adId, daysRunning, hook_strength, audience_relevance, benefit_clarity, cta_quality. Returns pillar scores and finalScore per ad.",
+        "jsCode": "const W = { longevity: 0.40, hook: 0.20, audience: 0.15, benefit: 0.15, cta: 0.10 };\nconst MAX_DAYS = 120;\nconst r1 = n => Math.round(n * 10) / 10;\nconst ads = JSON.parse(query);\nreturn JSON.stringify(ads.map(a => {\n  const p = {\n    longevity: r1(Math.min(Number(a.daysRunning) || 0, MAX_DAYS) / MAX_DAYS * 10),\n    hook: Number(a.hook_strength) || 0,\n    audience: Number(a.audience_relevance) || 0,\n    benefit: Number(a.benefit_clarity) || 0,\n    cta: Number(a.cta_quality) || 0,\n  };\n  const finalScore = r1(p.longevity*W.longevity + p.hook*W.hook + p.audience*W.audience + p.benefit*W.benefit + p.cta*W.cta);\n  return { adId: a.adId, pillars: p, finalScore };\n}));"
+      },
+      "id": "c3652a4a-5a20-4438-97e1-f43cbdfce631",
+      "name": "Code Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        2000,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"ranked\": [\n    {\"rank\": 1, \"adId\": \"\", \"pageName\": \"\", \"finalScore\": 0,\n     \"pillars\": {\"longevity\": 0, \"hook\": 0, \"audience\": 0, \"benefit\": 0, \"cta\": 0},\n     \"reason\": \"\"}\n  ],\n  \"winner\": {\"adId\": \"\", \"reason\": \"\"},\n  \"patterns\": [\"\"],\n  \"caveats\": \"\"\n}"
+      },
+      "id": "9be66b83-cd1b-4283-8365-9ad9fc40cf90",
+      "name": "Structured Output Parser1",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2256,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "output.ranked",
+        "options": {}
+      },
+      "id": "329c0435-e2d8-46a5-b4ea-4657184cbfc0",
+      "name": "Split Out",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1.1,
+      "position": [
+        2464,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1xaIiDyxfYo9qbiSweeQf2MGd8sNzyNLYT3_LXgdp224",
+          "mode": "list",
+          "cachedResultName": "MySivi Ads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xaIiDyxfYo9qbiSweeQf2MGd8sNzyNLYT3_LXgdp224/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Leaderboard",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1xaIiDyxfYo9qbiSweeQf2MGd8sNzyNLYT3_LXgdp224/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "adId": "={{ $json.adId }}",
+            "rank": "={{ $json.rank }}",
+            "date": "={{ $today.format('yyyy-MM-dd') }}",
+            "language": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.language }}",
+            "days_running": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.daysRunning }}",
+            "final_score": "={{ $json.finalScore }}",
+            "creative_score": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.creativeScore }}",
+            "hook_type": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.hook_type }}",
+            "tone": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.emotion }}",
+            "format": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.creative_approach }}",
+            "hook_score": "={{ $json.pillars.hook }}",
+            "hook_text": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.hook }}",
+            "audience_score": "={{ $json.pillars.audience }}",
+            "benefit_score": "={{ $json.pillars.benefit }}",
+            "cta_score": "={{ $json.pillars.cta }}",
+            "longevity_score": "={{ $json.pillars.longevity }}",
+            "cta_text": "={{ $('Aggregate').first().json.ads.find(a => a.adId == $json.adId)?.cta }}"
+          },
+          "matchingColumns": [
+            "adId"
+          ],
+          "schema": [
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rank",
+              "displayName": "rank",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "adId",
+              "displayName": "adId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "language",
+              "displayName": "language",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "days_running",
+              "displayName": "days_running",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "final_score",
+              "displayName": "final_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "creative_score",
+              "displayName": "creative_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hook_type",
+              "displayName": "hook_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "tone",
+              "displayName": "tone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "format",
+              "displayName": "format",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hook_score",
+              "displayName": "hook_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cta_score",
+              "displayName": "cta_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "audience_score",
+              "displayName": "audience_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "benefit_score",
+              "displayName": "benefit_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "longevity_score",
+              "displayName": "longevity_score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "hook_text",
+              "displayName": "hook_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cta_text",
+              "displayName": "cta_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "body",
+              "displayName": "body",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "85b2b69e-51ba-4cf3-b0db-ac0f2f651494",
+      "name": "Leaderboard",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3008,
+        -416
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "kx3OHbg8Bl9cKDHT",
+          "name": "Google Sheets account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "maxItems": 3
+      },
+      "id": "c8632d61-dbb9-4752-9fec-0add8b083619",
+      "name": "Limit",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        3024,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "topads",
+        "options": {}
+      },
+      "id": "b6a10fcd-4725-4788-8424-02de37b12907",
+      "name": "Top Ads",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        3248,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Top ads (ranked): {{ JSON.stringify($json.topads) }}\n\nFull details of these ads: {{ JSON.stringify($('Aggregate').first().json.ads.filter(a => $json.topads.map(t => t.adId).includes(a.adId))) }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a creative strategist for a spoken-English app. Using only the ads provided, write a Markdown creative brief with these sections:  # Creative Brief  ## 1. Winning DNA What the top ads share: hook type, emotion, angle, format and CTA. Mention the language of each ad.  ## 2. Three New Hook Ideas Three original hooks in the same style, not copied. Give each hook in English and, if the ad was in Hindi, in Hinglish too.  ## 3. Script Outline One full script outline: Hook (first 3 seconds), Body, CTA.  ## 4. What To Test First Two or three A/B tests, with the one variable being changed in each.  Rules: - Do not invent performance numbers (no CTR, ROAS or CPA). - Only use facts from the ads given. - Keep Hindi or Hinglish quotes, with an English translation. - Keep the brief under 500 words. yeh dekho"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "id": "1702d6e0-2e06-4d47-bc29-3d963a8c9461",
+      "name": "Startegist",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        3472,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {}
+      },
+      "id": "e8a37fec-e5c7-4fd8-9234-9302d2ef0592",
+      "name": "Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        3392,
+        256
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "UMqowhHEeeYEv8bi",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "text",
+        "options": {
+          "fileName": "=brief-{{ $today.format('yyyy-MM-dd') }}.md"
+        }
+      },
+      "id": "b2a38e87-fff2-4087-bd35-623426d8ea9a",
+      "name": "Text File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.2,
+      "position": [
+        3840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.videoUrl }}",
+        "options": {}
+      },
+      "id": "d4206460-abd6-4b4a-842e-a0776d19fc99",
+      "name": "Download video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        768,
+        -384
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-3.1-flash-lite",
+          "mode": "list",
+          "cachedResultName": "Gemini 3.1 Flash Lite"
+        },
+        "text": "=You are an expert Facebook video advertisemet analyst.\n\nAnalyze the provided video from beginning to end. Extract the Hook, Body, and CTA from the video itself: opening scenes, on-screen text, spoken audio, and the final call to action.\n\nRULES:\n- Analyze only the actual video, not external information.\n- Do not invent words, offers, benefits, or claims.\n- Hook = what happens in the first 3 seconds (spoken + visual + on-screen text).\n- Body = main message, product/service, and benefits communicated.\n- CTA = the actual action spoken or displayed. If missing or unclear, use \"Not available\".\n- If speech is unclear, do not guess. Write \"unclear\" for that part.\n- The video may be in Hindi, Kannada, Bengali, Hinglish or another language. Quote spoken and on-screen text in the original language, followed by an English translation in brackets. Write all your own analysis in English.\n- Return valid JSON only. No Markdown, no code fences, no text before or after.\n- If the video cannot be accessed or analyzed, return exactly: {\"error\": \"reason\"}\n\nScoring (integers 1-10). Be strict: 5 is average, 8+ only if clearly excellent.\n- hook_strength: how strongly the first 3 seconds grab attention.\n- audience_relevance: how clearly the ad targets a specific audience.\n- benefit_clarity: how clearly the benefits are communicated.\n- cta_quality: how clear and actionable the CTA is. No CTA = 1 to 2.\n\nReturn exactly these fields:\n\n{\n  \"language\": \"main spoken language of the video\",\n  \"hook\": \"string\",\n  \"hook_type\": \"one of: question, problem, offer, curiosity, social_proof, demo, other\",\n  \"body\": \"string\",\n  \"cta\": \"string\",\n  \"angle\": \"one of: price_offer, problem_solution, social_proof, aspiration, fear_of_missing_out, demo, other\",\n  \"emotion\": \"main emotion the ad targets, one or two words\",\n  \"creative_approach\": \"one of: talking_head, ugc, animation, screen_recording, text_on_screen, testimonial, other\",\n  \"visual_summary\": \"string\",\n  \"on_screen_text\": \"string\",\n  \"spoken_message\": \"string\",\n  \"hook_strength\": <integer>,\n  \"audience_relevance\": <integer>,\n  \"benefit_clarity\": <integer>,\n  \"cta_quality\": <integer>,\n  \"reasoning\": \"string, with evidence from the video\"\n}",
+        "inputType": "binary",
+        "options": {}
+      },
+      "id": "7432253d-7ed5-477c-9621-feb29be9fa59",
+      "name": "Analyze video",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1104,
+        -384
+      ],
+      "waitBetweenTries": 5000,
+      "retryOnFail": false,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ezBczaWQHZtIn5jd",
+          "name": "Google Gemini(PaLM) Api account 3"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "510a7043-c4d7-4964-a14c-dcf8dd3a1e90",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        -384
+      ],
+      "webhookId": "3bbf00d6-fdc5-4d87-96a9-d33d7fee0e15"
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "7380fb1c-e803-460d-a0f6-fed5590cac00",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        448,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1Fu0iLjD6ckr576qfhxzov_PbAd7d-MaB",
+          "mode": "list",
+          "cachedResultName": "MySivi Briefs",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1Fu0iLjD6ckr576qfhxzov_PbAd7d-MaB"
+        },
+        "options": {}
+      },
+      "id": "7c0b192f-ce15-42e3-97a9-beb13b2bf03e",
+      "name": "Upload file",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        4096,
+        0
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "PkbuqH3ALwYM5Yat",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": " ## Input & Scrape                                                                                                 ",
+        "height": 272,
+        "width": 848
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -576,
+        -208
+      ],
+      "typeVersion": 1,
+      "id": "7a73db64-8463-47a9-bb33-bad733be0873",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "c55343af-8714-4514-8779-1d881bdf8c74",
+                    "leftValue": "={{ $json.videoUrl }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "notEmpty",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "dad88b2c-9eee-44c7-ac73-1307f77d46f4",
+      "name": "Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.5,
+      "position": [
+        128,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "content": "##  Video Ads Analysis\n",
+        "height": 336,
+        "width": 1264,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        384,
+        -480
+      ],
+      "typeVersion": 1,
+      "id": "83eb2dc2-b96d-4a0e-a039-4b5eb15abaa2",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Data Formating \n",
+        "height": 224,
+        "width": 608,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        864,
+        -80
+      ],
+      "typeVersion": 1,
+      "id": "caa3faf7-6e29-4d4c-b5cc-cff08252907b",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "## Performance & Creative Brief\n",
+        "height": 544,
+        "width": 1392,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2960,
+        -128
+      ],
+      "typeVersion": 1,
+      "id": "1e71d6d9-6ba5-4065-bebb-5ab0470c4311",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "## Leaderboard & Dashboard\n",
+        "height": 224,
+        "width": 432,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2928,
+        -480
+      ],
+      "typeVersion": 1,
+      "id": "0f2277a3-cfe2-4c24-8021-af6a7c932894",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "## Ai Agent Scoring & Analysis\n",
+        "height": 608,
+        "width": 944,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1680,
+        -304
+      ],
+      "typeVersion": 1,
+      "id": "75983ae2-4175-41c0-9fa2-0143437fbbf5",
+      "name": "Sticky Note5"
+    }
+  ],
+  "pinData": {
+    "Analyze video": [
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"Spoken: \\\"Thoda dhire bolo na.\\\" (Speak a little slower, please.) Visual: An animation of a couple talking on a phone call. On-screen text: \\\"Neha On a call...\\\"\",\n  \"hook_type\": \"problem\",\n  \"body\": \"The video presents a scenario where a girl's parents are suspicious of her talking to a guy in English on the phone. The guy explains that he is only her English practice partner. This transitions into the introduction of the MySivi app as a tool to improve English speaking skills. The app claims to have 10M+ downloads, 24/7 AI English teachers, 500+ exercises and lessons, and offers a trial for 1 Rupee.\",\n  \"cta\": \"Install\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"relatable, curious\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"The video begins with an animated phone call screen between two characters. It then transitions to a Google Play Store page showing the 'MySivi AI' app being installed and finally showcases the premium subscription offer screen.\",\n  \"on_screen_text\": \"Neha On a call... MySivi 10M+ Downloads Start English Learning -MySivi MySivi Premium Limited time offer ₹1\",\n  \"spoken_message\": \"Thoda dhire bolo na. Kyu? Kya hua? Meri mummy papa ko lagta hai ki mera kisi ke sath affair chal raha hai. Aisa kyu lagta hai unhe? Kyunki wo dekhte hai ki mai roz phone pe kisi se baat karti hu, par se English me baat karti hu. Isliye mummy papa ko lagta hai ki mai pakka unse chhupa ke kuch kar rahi hu. Matlab unhe lagta hai ki mai tumhara boyfriend hu? Ha lekin sach toh ye hai ki tum sirf mere English practice partner ho. Aur dekho tumhari English kitni improve ho gayi hai. MySivi app par 1 crore log roz spoken English practice kar rahe hai. Aap bhi aaj hi shuru kijiye, trial sirf 1 rupaye mein.\",\n  \"hook_strength\": 7,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The ad effectively uses a relatable social situation (parents being suspicious of English practice) to introduce the pain point of needing English practice. The hook is solid because it immediately draws the viewer into a personal conversation. The benefits are clearly outlined through the app's features and the low-cost trial offer.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRMhIvvZTjguVAeYmsASYxaFThIJ2QRbmIuQ77Hu04/EyJfgQytknRgtVv6vW2DIjAu9v7SorgDDInEhaLTghkz0zA2Y0xBR8Xg13JJzsuVxktE8pOX4HTZnaELN04VKlERz+rKqnntiKhej9RfCaWAJcOhMAEXvuilyL1MgFW6qx2OcOWKKbCj2PV9dSesjmcGx+wAWGDLarpQ="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"The video starts with a phone call conversation between a man and a woman. The woman says, \\\"thoda dhire baat karo na\\\" (Speak a bit softly), to which the man replies, \\\"arre kya hua? aise chup chup ke kyun baat kar rahi ho?\\\" (Hey, what happened? Why are you speaking so secretly?).\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The woman explains that her mother is suspicious of her late-night English conversations, fearing she is involved in a romantic relationship. The man then suggests that she explain to her mother that he is just an English practice partner. The video then transitions to an app screen showing the 'MySivi' app, claiming 10 million+ downloads, and highlighting its role in English learning.\",\n  \"cta\": \"Start English learning with a trial at no cost; 1 day of Premium benefits for ₹1.\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Amusement, curiosity\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"An animated video call interface showing two characters. It then switches to a screen recording showing the MySivi App Store page and a special one-rupee trial offer.\",\n  \"on_screen_text\": \"Riya On a call... 10M+ Downloads, MySivi is now MySivi, Improve English speaking with AI, 1 day of Premium benefits for ₹1\",\n  \"spoken_message\": \"A conversation about a suspicious mother hearing the user speak English, followed by a narrator introducing the MySivi app for English speaking practice.\",\n  \"hook_strength\": 8,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 9,\n  \"reasoning\": \"The hook uses a relatable interpersonal conflict that draws the viewer in immediately. It effectively pivots the 'problem' (mother's suspicion) into a 'solution' (using an English practice app) that feels natural. The CTA is very clear and offers an extremely low entry barrier of ₹1, making it highly effective for conversion.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRNf8LodOxmddYVDiqzuSYweSQK2oo5XYIi3dRaxxg4Ogklz21tMwyL6XMFCRnfBPFNN3//v+0qEIYK2+nsyrGYHhSjyh4uwRWiJDGxnDXh8HZ7Xv3Y/Y8IIrnHF5SchdyLMA5Y0JKgoMtYC2G4kJAakqjmcl0oguyMeoW+fYwzIV+pgRlSbA77CgDxLC9XTZzyZxy/C9vkpJE8="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 1
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"The video starts with an animation of two people talking on a video call. The girl asks the boy to speak slowly. The boy asks why she is whispering. Spoken: \\\"Thoda dhire baat karo na...\\\" [Please talk a little slowly...] \\\"Arre kya hua? Aise chup chup ke kyu baat kar rahi ho?\\\" [What happened? Why are you whispering like this?]\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The girl explains that her mother is suspicious because she always speaks in English on the phone, assuming she is in a romantic relationship. She then reveals that she told her mother the boy is not her boyfriend but her English practice partner. The ad then introduces the 'MySivi' app, claiming 1 crore people practice spoken English daily, offering a premium trial for just 1 rupee.\",\n  \"cta\": \"Start English Learning - MySivi app (displayed on screen, with a 1 Rupee trial offer)\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"relatable, curious\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"The ad uses animated characters portraying a phone conversation, followed by a screen recording demonstrating the MySivi app interface and its features.\",\n  \"on_screen_text\": \"Riya On a call... 10M+ Downloads. Start English Learning - MySivi. MySivi Premium 1 day of Premium benefits for ₹1.\",\n  \"spoken_message\": \"The girl talks about her mother's suspicion regarding her English phone calls. The narrator explains the app's popularity and the 1 rupee trial offer.\",\n  \"hook_strength\": 7,\n  \"audience_relevance\": 8,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The ad effectively uses a relatable social situation (parents being suspicious of English practice calls) to transition naturally into a product demonstration. It targets people looking to improve their English skills by positioning the app as a safe and accessible practice partner. The call to action is very specific and incentivized with a low-cost trial offer.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRMCr/0yXnnoHbah9zMtz1Tl5ECwF2vnkBTrZSSMUphHxjypRs4BfiNixjReISVM3hviHC6mvKaUdpeJIHo26xKD4efOmxlPSAZ7igxNm5YlQWp/c5Dwad82Z2NfOGdbYOU9VmKbLDr9Zqo7OkviKmcjPsdSsr5G/mUC/mTYAkoP442adOn0Isqn46Bw7UTQdBs+UIDis1KbIRU="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 2
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"A phone call interface shows two animated characters chatting. The female character says: 'Thoda dheere baat karo na' (Speak a bit softly).\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The female character explains she is whispering because her mother is suspicious of her late-night English practice calls, mistaking them for a romantic relationship. She reveals she told her mother the male character is her 'English practice partner'. The video then transitions to the MySivi app, highlighting that 10 million people use it for daily spoken English practice.\",\n  \"cta\": \"Start your English learning with a trial at no cost; practice English now.\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity and amusement\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"The ad features a phone screen recording of a simulated video call between two cartoon-style avatars, transitioning into a screen recording of the MySivi mobile app interface, including store listings and subscription details.\",\n  \"on_screen_text\": \"Riya On a call... MySivi, 10M+ Downloads, Start English Learning - MySivi, MySivi Premium Limited Time Offer 1 day of Premium benefits for ₹1\",\n  \"spoken_message\": \"Thoda dheere baat karo na. (Speak a bit softly.) Are kya hua, aise chup chup ke kyu baat kar rahi ho? (What happened, why are you talking in whispers?) Kyunki meri mummy ko mujh pe shak ho gaya hai. (Because my mother has become suspicious of me.) Shak kis baat ka? (Suspicious of what?) Main humesha phone par English mein baat karti hu toh unhe aisa lagta hai ki mera koi love shak ka chakkar hai. (I always talk in English on the phone so she feels I have a love affair.) Oh, toh meri wajah se aunty itni suspicious hai? (Oh, so is aunty suspicious because of me?) Haan, maine bhi unhe bol diya, 'He's not my boyfriend, he's my English practice partner'. (Yes, I told her, 'He's not my boyfriend, he's my English practice partner'.) Wah, English toh kaafi confidently bol diya. (Wow, you said that English quite confidently.) MySivi app par 1 crore log roz spoken English practice kar rahe hain. Aap bhi aaj hi shuru kijiye. (1 crore people are practicing spoken English daily on the MySivi app. You start today too.)\",\n  \"hook_strength\": 7,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The hook uses a relatable social dilemma (misunderstanding with parents) to capture interest before transitioning smoothly into the product feature. It clearly identifies the target audience as people wanting to learn English. The benefits are tied to the solution for the presented problem, and the CTA is clearly stated at the end.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRPoOtcg5/YLI3/mDC/vaLfKTfxo6zfF6rrOkn71a+CfAt4hR6oxcez6S4lYWjoG2+xDNTEbS4+tQOxxLNtgwFfwu2BHwMCnfUty2mpBhNiAIQ6suMhGnwRHpwOL6zBipPYrYE1ecdVAXvvCG6FfJ3SA3f3/xhr6LrBZ2KyaphiWE41ZRJr0C2G1svcVGiLyyFToITJCHjTig+I="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 3
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"The video starts with an animation of two characters on a phone call. The female character whispers, \\\"Thoda dheere baat karo na\\\" [Speak a little softer].\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The ad presents a relatable scenario where a girl's mother suspects she is in a relationship because she hears her speaking English on the phone. The girl clarifies that the person she is talking to is just her English practice partner. This leads to the introduction of the MySivi app, which is presented as a tool for English practice, featuring over 10 million downloads and a special trial offer of 1 day of premium benefits for ₹1.\",\n  \"cta\": \"Start learning with a trial at no cost; 1 day of premium benefits for ₹1.\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Amusement, Relatability\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"The ad uses character animation to simulate a phone conversation, transitioning to a screen recording of the app's installation from the Play Store and the final checkout/offer screen.\",\n  \"on_screen_text\": \"10M+ Downloads; Start English Learning - MySivi; 1 day of Premium benefits for ₹1\",\n  \"spoken_message\": \"Thoda dheere baat karo na. (Speak a little softer.) Are kya hua? (What happened?) Aise chup-chup ke kyun baat kar rahi ho? (Why are you whispering?) Kyunki mere mummy ko mujh pe shak ho gaya hai. (Because my mother is suspicious of me.) Shak kis baat ka? (Suspicious about what?) Main hamesha phone par English mein baat karti hoon toh unhe aisa lagta hai ki mera koi love shak ka chakkar hai. (I always speak in English on the phone, so they think I'm having a love affair.) Oh, toh meri wajah se aunty itni suspicious hai. (Oh, so my aunt is suspicious because of me?) Haan, maine bhi unhe bol diya hai. He is not my boyfriend, he is my English practice partner. (Yes, I told her. He is not my boyfriend, he is my English practice partner.) Wah, English toh kaafi confidently bol diya. (Wow, you spoke English quite confidently.) MySivi app par 1 crore log roz spoken English practice kar rahe hain. Aap bhi aaj hi shuru kijiye. Trial sirf ₹1 mein. (1 crore people are practicing spoken English every day on the MySivi app. You should start today, too. Trial for only ₹1.)\",\n  \"hook_strength\": 7,\n  \"audience_relevance\": 8,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The ad uses a common, relatable social situation to hook the audience effectively. It transitions naturally from the story into the product introduction. The benefit is clear (English practice) and the offer is highly accessible (₹1 trial), making the call to action very persuasive.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfROTtzhxxGNe8PQl68gDriPTFzsBde/5AKN3HJktHbJScDpQT9jAaOknzuUf9BNhCOV8/PVlSmDN+XYpm42F/mWyPI55jo7UswbL01hsPAk2ncBVT6uFrN9/FBLwHreJyf3RlStVz2ZSb76xHRox3OULl+7kVm4TZViSU4t96m+OpkPWeBRLWlN0UElRj/7UnowCzkgWNNJydWA="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 4
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Kannada\",\n  \"hook\": \"Visual: A man in a suit is floating outside an airplane window, talking to a female robot passenger. Audio: 'ಕಾಪಾಡಿ... ಕಾಪಾಡಿ...' [Save me... Save me...]\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The video features a conversation between a man and a female robot about learning English. The robot suggests using the 'MySivi' app, claiming it offers real-time practice and is more effective than traditional coaching classes. She mentions that over 10 million people have used it, it has a 4.6 rating on the Play Store, and users see results in just 15 days. The trial costs only 1 rupee.\",\n  \"cta\": \"Click on 'Install Now' and download MySivi app.\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity and relief\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"An animated scene showing a man floating outside an airplane window talking to a robot inside the cabin, transitioning to a screen recording of the app installation process.\",\n  \"on_screen_text\": \"ಕಾಪಾಡಿ... [Save me...], ನಂಗೆ ಇಂಗ್ಲಿಷ್ ಬರಲ್ಲ [I don't know English], ಅದಕ್ಕೆ ನನ್ನ ಜೊತೆ ಮೈಸಿವಿನಲ್ಲಿ ಮಾತಾಡಿ ಇಂಗ್ಲಿಷ್ ಕಲಿಯಿರಿ [That's why talk with me on MySivi and learn English], ಇಂಗ್ಲಿಷ್ ಕಲಿಯೋಕೆ ನಾನು ಯಾವುದಾದ್ರೂ ಕೋಚಿಂಗ್ ಕ್ಲಾಸ್ ಹೋಗ್ತೀನಿ ಬಿಡಿ [I will go to some coaching class to learn English], ಕೋಚಿಂಗ್ ಕ್ಲಾಸ್ ನಲ್ಲಿ ಬರಿ ಬುಕ್ ನೋಡಿ ಪಾಠ ಮಾಡ್ತಾರೆ, ಆದ್ರೆ ನಾನು ನಿನ್ ಜೊತೆ ರಿಯಲ್ ಆಗಿ ಮಾತಾಡಿ ಪ್ರಾಕ್ಟೀಸ್ ಮಾಡಿಸ್ತೀನಿ [In coaching class they only teach by looking at books, but I will make you practice by talking to you for real], ನೀನು ಸತ್ಯ ಹೇಳ್ತಿದ್ದೀಯಾ ಅಂತ ನಂಬೋದು ಹೆಂಗೆ? [How to believe you are telling the truth?], 1 CRORES+ PEOPLE ಬಳಸಿದ್ದಾರೆ [1 CRORES+ PEOPLE used it], 4.6 [Play Store rating], 4.5 [App Store rating], ಸರಿ ಆಯ್ತು ಕಾಪಾಡಿ, ನಾಳೆ ಜಾಯಿನ್ ಆಗ್ತೀನಿ [Okay, save me, I'll join tomorrow], ನಾಳೆ ಯಾಕೆ ಇವತ್ತೇ ಶುರು ಮಾಡಿ [Why tomorrow? Start today], 15 DAYS, ಆದ್ರೆ ಇದಕ್ಕೆ ತುಂಬಾ ದುಡ್ಡು ಕಟ್ಟಬೇಕಲ್ಲ [But I have to pay a lot of money for this], ಅಯ್ಯೋ ಇಲ್ವೇ ಇಲ್ಲ! ಟ್ರಯಲ್ ಬರಿ 1 ರೂಪಾಯಿ ಅಷ್ಟೇ [Oh, not at all! Trial is only 1 rupee], ಈಗಲೇ ಮೈಸಿವಿ ಇನ್ಸ್ಟಾಲ್ ಮಾಡಿ ಇಂಗ್ಲಿಷ್ ಮಾತಾಡೋಕೆ ಶುರು ಮಾಡಿ [Install MySivi now and start speaking English], Install Now\",\n  \"spoken_message\": \"The audio matches the on-screen text, detailing the conversation about learning English and the features of the MySivi app.\",\n  \"hook_strength\": 9,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 9,\n  \"cta_quality\": 9,\n  \"reasoning\": \"The ad uses a highly creative and visually arresting hook that immediately grabs attention. It clearly defines the target audience (people wanting to learn English) and presents the app as a unique, effective, and affordable solution. The benefits are explicitly listed, and the CTA is very clear, making it a well-structured persuasive ad.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRNkT06g9NAxZ9ozn7iArYrf2/MjvlbAwy3z0OJAh+nBXkjMJvd0dcp3o3+Qzx58otJuvKkVKwsr+iANYBJfhiUaK1i9gJycL5/BU4Co9qaj8inwfNjfCiWHF4pcVqoqutjtAuGzjoM1mUN+7hz0ZkxYAE0HmAJXQdSOAyKvWXNSmpb8kaE0CDNS0yEW1+DpKgijtQYO8riRbTA="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 5
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hindi/Hinglish\",\n  \"hook\": \"Spoken (female): \\\"Matlab, ab main call nahi uthati toh kisi aur se baat karoge?\\\" (Meaning, if I don't pick up the call, will you talk to someone else?) Visual: A video call between a couple.\",\n  \"hook_type\": \"problem\",\n  \"body\": \"The couple discusses talking to different people on video calls as a way to practice spoken English, instead of just scrolling through Instagram. The ad transitions to showing the 'MySivi' app, which offers 24/7 AI English teachers and 500+ exercises.\",\n  \"cta\": \"Start the trial for ₹1.\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity and Relatability\",\n  \"creative_approach\": \"ugc\",\n  \"visual_summary\": \"A video call interface between a young man and woman, followed by an overlay showing the Google Play Store page for the MySivi app, and a final screen showcasing a ₹1 premium trial offer.\",\n  \"on_screen_text\": \"10M+ Downloads; MySivi app logo; Master Spoken Eng; MySivi Premium; Limited Time Offer ₹1; 24/7 AI English Teacher; 500+ Exercises and Lessons; Unlimited Access\",\n  \"spoken_message\": \"The couple talks about practicing spoken English by calling people. The narrator mentions that 10 million people use MySivi to practice, encouraging the viewer to start their trial for just ₹1.\",\n  \"hook_strength\": 8,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The ad uses a relatable, casual video call scenario to hook the audience. It transitions smoothly into a benefit-driven pitch for an English learning app. The target audience (young adults interested in self-improvement) is clearly addressed. The CTA is direct and incentivized by a low price point.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRPyoCnM3oiOWGrhKtz5rfRFvksqvF0eatkjXGcOd5uyBMyBudkTCIpHe0qevLrcGvFB9O4jjGFDAjFPvpxcZZHPO1W+7XXNLl+DP89xZUAP1oP4mzFMn9WHL16D5gRW6KEDgV1YD4WijEvgZGmkTrPRMm+eEVqFm6wwFT/E3/+Rwy6zSHn6YZeryyDff/fXADJrPx8xuGynyxY="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 6
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hinglish\",\n  \"hook\": \"The video starts with an animated phone call screen with text: 'मतलब अब मैं कॉल' [Meaning now I call]\",\n  \"hook_type\": \"problem\",\n  \"body\": \"The ad depicts a conversation between two animated avatars discussing the benefits of using the MySivi app over scrolling on Instagram for practicing spoken English. It highlights features like 24/7 AI English teacher, 500+ exercises, and unlimited access.\",\n  \"cta\": \"आप भी आज ही शुरू कीजिए, ट्रायल सिर्फ 1 रुपये\" [Start today, trial just for 1 rupee]\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity, Ease\",\n  \"creative_approach\": \"animation\",\n  \"visual_summary\": \"The ad uses an animated interface mimicking a voice call between two avatars, transitioning into a screen recording of the Google Play Store page for the MySivi app and its pricing/subscription screen.\",\n  \"on_screen_text\": \"मतलब अब मैं कॉल नहीं उठाती तो किसी और से बात करोगे? Obviously थोड़ा, भी पहले दिन weird लगा था। अब नहीं लगता? अब लगता है कि Instagram स्क्रॉल करने से बेहतर है ना? अलग-अलग लोगों से बात करो और spoken English की practice करो। हाँ, ये सच है। MySivi app पर 1 करोड़ लोग रोज spoken English practice कर रहे हैं। आप भी आज ही शुरू कीजिए। trial सिर्फ 1 रुपये\",\n  \"spoken_message\": \"The audio is a dialogue between two characters discussing the effectiveness of the MySivi app for English practice, followed by a voiceover mentioning the app's popularity and the 1 rupee trial offer.\",\n  \"hook_strength\": 6,\n  \"audience_relevance\": 8,\n  \"benefit_clarity\": 9,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The hook successfully mimics a relatable social scenario (a voice call) to initiate interest. The body clearly articulates the problem (mindless scrolling) and the solution (the app). The CTA is direct, time-sensitive, and incentivized with a low-entry price.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRMIFS+yWKnaIiO6ETS/N/0bri0vgbGvynjoiKqO18iZLPeQ7Ap+VZPXnastxHemqIdZIVDJyTLAOWgO66NN3zUkL4RS7bZLDPNcHzTSC5iW+2rmIRPuC1tA2FOAXcv1/6AIxygRs7B2HWsHL20vdd+R1nn1YwiT4ublS6PA3zmQkK+YTV6yZbhyeRWW8n3/R3TfH0K6Dn2CNU8="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 7
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Bengali\",\n  \"hook\": \"The video starts with a split-screen video call between two people talking about a recent experience. The dialogue starts with: \\\"মানে আমি যদি কলটা না ধরতাম তাহলে তুমি অন্য কারো সাথে কথা বলতে\\\" [If I hadn't picked up the call, you would have spoken to someone else].\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The speakers discuss the uniqueness of a video call experience. They transition to talking about the 'MySivi' app, which allows users to practice speaking English by talking to new people. The video shows the Google Play Store page for the 'MySivi' app, highlighting over 10 million downloads and a premium offer of ₹1 for access to a 24/7 AI English teacher, 500+ exercises, and unlimited access.\",\n  \"cta\": \"আপনিও আজই শুরু করুন ট্রায়াল মাত্র এক টাকায়\" [Start your trial today for just one rupee],\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity and encouragement\",\n  \"creative_approach\": \"talking_head\",\n  \"visual_summary\": \"The video begins with a split-screen layout showing two people on a video call. It then transitions to a screen recording showing the MySivi app on the Google Play Store, followed by a promotional slide for the app's premium subscription.\",\n  \"on_screen_text\": \"10M+ Downloads\",\n  \"spoken_message\": \"The conversation covers the unconventionality of the platform compared to Instagram stories, emphasizing its usefulness for practicing spoken English by interacting with new people. It then promotes the MySivi app's premium subscription.\",\n  \"hook_strength\": 5,\n  \"audience_relevance\": 8,\n  \"benefit_clarity\": 8,\n  \"cta_quality\": 8,\n  \"reasoning\": \"The hook successfully generates curiosity by showing a relatable social interaction, though it takes a moment to connect that interaction to the product. The app's benefits—practicing English, AI support, and low-cost trials—are clearly explained through both dialogue and on-screen visuals. The CTA is direct and easy to follow.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRNcbBZNDCGD4PF29C6GQnJkaH86kPKsKbBzG2yxTzUMsyhOCWDyVR4EM9o2EQfE13iAUzoAlddnZNOIoun7ke/7fTbiKC7ivQ78fusK6pJ/jGAs0NGno/fWKF3kqDA4jG/TlosAw5LF+rdMSv3vs9Ok8mR8UajTtBeWW/qtW7FeaP/GmQ+uXehoWrquf/gOZowyXsHmwXKb2EA="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 8
+        }
+      },
+      {
+        "json": {
+          "content": {
+            "parts": [
+              {
+                "text": "{\n  \"language\": \"Hindi/Hinglish\",\n  \"hook\": \"Spoken: 'Door reh, paas mat aa.' (Stay away, don't come close.) Visual: Two people driving cars close to each other. Text: 'Door reh' (Stay away).\",\n  \"hook_type\": \"curiosity\",\n  \"body\": \"The woman introduces the MySivi app to the man to help him learn English. The app features gamified lessons, personalized learning based on the user's level, 24/7 AI English teacher, and over 500 exercises. It has over 10M downloads and a 4.6-star rating.\",\n  \"cta\": \"Abhi MySivi download karo aur English bolna shuru karo. (Download MySivi now and start speaking English.)\",\n  \"angle\": \"problem_solution\",\n  \"emotion\": \"Curiosity, confidence\",\n  \"creative_approach\": \"other\",\n  \"visual_summary\": \"A man and a woman are having a conversation while driving luxury cars on a coastal road. The woman, who has a robotic arm, uses her phone to demonstrate the MySivi app, showing its interface and features.\",\n  \"on_screen_text\": \"Door reh, Toh ise English mein bolkar dikhao, MySivi, Sikhaogi kaise?, Teacher ki tarah, board lekar boring, Games khelne jaisa mazedaar, Ye sab sach mein, 15 din mein improvement, Abhi paise nahi, 3 days of Premium benefits for ₹1\",\n  \"spoken_message\": \"Door reh, paas mat aa. Toh ise English mein bolkar dikhao. Mujhe English nahi aati. Isliye toh keh rahi thi, mere saath MySivi pe English seekh lo. Seekhaogi kaise? Tumhara level dekh kar, jaise tumhe samajh aaye waise sikhaungi. Teacher ki tarah board lekar boring nahi karungi, games khelne jaisa mazedaar lagega. Ye sab sach mein bharosa karne layak hai? Ek karod logo ko sikha chuke hain. 4.6 rating wali top app hai MySivi. Acha rehne do, kal join kar lunga. Abhi se shuru karo, 15 din mein improvement dikhne lagega. Abhi paise nahi hai mere paas. Bas ek rupaye mein hi shuru ho jata hai. Toh abhi MySivi download karo aur English bolna shuru karo.\",\n  \"hook_strength\": 7,\n  \"audience_relevance\": 9,\n  \"benefit_clarity\": 9,\n  \"cta_quality\": 9,\n  \"reasoning\": \"The hook effectively uses a dramatic, high-quality visual scene to pique curiosity. The body provides clear benefits and addresses user objections (such as price and difficulty) directly, establishing credibility with impressive statistics. The CTA is very direct, clear, and easy to follow.\"\n}",
+                "thoughtSignature": "EqEBCp4BAWkUfRMk+NRZydEeck3n3HdxMyQz/vYRRBXH0JIUG3/Hxi6ujC2QINyczTqT0BF7AOjUn8tdQAUlMAtY5YDKqKGpBWuuXXxPRuPPqYjd4NO7jqLXHLEp9dMVLJQfj5eHzJpkTijjsr744dxFJCY3lvf08wYHacbCEktLq6dEf3BZidlczhNDaYOIHdXs+xGCyw3jkATKav1Wr83PQ9s="
+              }
+            ],
+            "role": "model"
+          },
+          "finishReason": "STOP",
+          "index": 0
+        },
+        "pairedItem": {
+          "item": 9
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Run Daily": {
+      "main": [
+        [
+          {
+            "node": "Scrape ADs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scrape ADs": {
+      "main": [
+        [
+          {
+            "node": "NormalizeAds",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NormalizeAds": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Formater1": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "Leaderboard",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leaderboard": {
+      "main": [
+        []
+      ]
+    },
+    "Limit": {
+      "main": [
+        [
+          {
+            "node": "Top Ads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Top Ads": {
+      "main": [
+        [
+          {
+            "node": "Startegist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Startegist": {
+      "main": [
+        [
+          {
+            "node": "Text File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Startegist",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Text File": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download video": {
+      "main": [
+        [
+          {
+            "node": "Analyze video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze video": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Data Formater1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Download video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a4e482c3-6a91-4dd8-a46d-c3c8832c4b35",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4fe2165898860762640572cffe2c91ac537d9bdf93970b54305657bf4293eebd"
+  },
+  "nodeGroups": [],
+  "id": "ExRq0H69uAhlolBf",
+  "tags": []
+}
